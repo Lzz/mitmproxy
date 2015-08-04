@@ -14,9 +14,7 @@ class Socks5IncomingLayer(Layer, ServerConnectionMixin):
             # TODO: Unmonkeypatch
             raise ProxyError2(str(e), e)
 
-        self._set_address(address)
+        self.server_address = address
 
         layer = AutoLayer(self)
-        for message in layer():
-            if not self._handle_server_message(message):
-                yield message
+        layer()

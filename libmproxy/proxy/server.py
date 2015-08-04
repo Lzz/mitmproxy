@@ -82,8 +82,7 @@ class ConnectionHandler2:
         root_layer = protocol2.Socks5IncomingLayer(root_context)
 
         try:
-            for message in root_layer():
-                print("Root layer receveived: %s" % message)
+            root_layer()
         except ProxyError2 as e:
             self.log(e, "info")
         except Exception:

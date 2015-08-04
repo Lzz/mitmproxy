@@ -1,18 +1,10 @@
 from __future__ import (absolute_import, print_function, division, unicode_literals)
-import Queue
-import threading
 import traceback
 from netlib import tcp
 
 from ..proxy import ProxyError2
 from .layer import Layer
-from .messages import Connect, Reconnect, ChangeServer
 from .auto import AutoLayer
-
-
-class ReconnectRequest(object):
-    def __init__(self):
-        self.done = threading.Event()
 
 
 class SslLayer(Layer):
@@ -48,32 +40,36 @@ class SslLayer(Layer):
               https://www.openssl.org/docs/ssl/SSL_CTX_set_cert_cb.html
             - The original mitmproxy issue is https://github.com/mitmproxy/mitmproxy/issues/427
         """
-        client_ssl_requires_server_cert = (
-            self._client_ssl and self._server_ssl and not self.config.no_upstream_cert
-        )
-        lazy_server_ssl = (
-            self._server_ssl and not client_ssl_requires_server_cert
-        )
 
-        if client_ssl_requires_server_cert:
-            for m in self._establish_ssl_with_client_and_server():
-                yield m
-        elif self.client_ssl:
+        if self._client_ssl_requires_server_cert:
+            self._establish_ssl_with_client_and_server()
+        elif self._client_ssl:
             self._establish_ssl_with_client()
 
         layer = AutoLayer(self)
-        for message in layer():
-            if message != Connect or not self._connected:
-                yield message
-            if message == Connect:
-                if lazy_server_ssl:
-                    self._establish_ssl_with_server()
-            if message == ChangeServer and message.depth == 1:
-                self.server_ssl = message.server_ssl
-                self._sni_from_server_change = message.sni
-            if message == Reconnect or message == ChangeServer:
-                if self.server_ssl:
-                    self._establish_ssl_with_server()
+        layer()
+
+    @property
+    def _client_ssl_requires_server_cert(self):
+        return self._client_ssl and self._server_ssl and not self.config.no_upstream_cert
+
+    @property
+    def _lazy_server_ssl(self):
+        return self._server_ssl and not self._client_ssl_requires_server_cert
+
+    def connect(self):
+        if not self._connected:
+            self.connect()
+        if self._lazy_server_ssl:
+            self._establish_ssl_with_server()
+
+    def change_server(self, address, server_ssl, sni, depth=1):
+        self.change_server(address, server_ssl, sni, depth)
+        if depth == 1:
+            self._server_ssl = server_ssl
+            self._sni_from_server_change = sni
+        if self._server_ssl:
+            self._establish_ssl_with_server()
 
     @property
     def sni(self):
@@ -88,7 +84,7 @@ class SslLayer(Layer):
         """
 
         # First, try to connect to the server.
-        yield Connect()
+        self.ctx.connect()
         self._connected = True
         server_err = None
         try:
@@ -96,32 +92,7 @@ class SslLayer(Layer):
         except ProxyError2 as e:
             server_err = e
 
-        # The part below is a bit ugly as we cannot yield from the handle_sni callback.
-        # The workaround is to do that in a separate thread and yield from the main thread.
-
-        # client_ssl_queue may contain the following elements
-        # - True, if ssl was successfully established
-        # - An Exception thrown by self._establish_ssl_with_client()
-        # - A threading.Event, which singnifies a request for a reconnect from the sni callback
-        self.__client_ssl_queue = Queue.Queue()
-
-        def establish_client_ssl():
-            try:
-                self._establish_ssl_with_client()
-                self.__client_ssl_queue.put(True)
-            except Exception as client_err:
-                self.__client_ssl_queue.put(client_err)
-
-        threading.Thread(target=establish_client_ssl, name="ClientSSLThread").start()
-        e = self.__client_ssl_queue.get()
-        if isinstance(e, ReconnectRequest):
-            yield Reconnect()
-            self._establish_ssl_with_server()
-            e.done.set()
-            e = self.__client_ssl_queue.get()
-        if e is not True:
-            raise ProxyError2("Error when establish client SSL: " + repr(e), e)
-        self.__client_ssl_queue = None
+        self._establish_ssl_with_client()  # This may trigger a server reconnect in handle_sni
 
         if server_err and not self._sni_from_handshake:
             raise server_err
@@ -132,19 +103,20 @@ class SslLayer(Layer):
         The client has just sent the Sever Name Indication (SNI).
         """
         try:
-            sn = connection.get_servername()
-            if not sn:
-                return
-            sni = sn.decode("utf8").encode("idna")
+            old_sni = self._sni_from_handshake
 
-            if sni != self.sni:
-                self._sni_from_handshake = sni
+            sn = connection.get_servername()
+            if sn:
+                self._sni_from_handshake = sn.decode("utf8").encode("idna")
+            else:
+                self._sni_from_handshake = None
+
+            if old_sni != self.sni:
 
                 # Perform reconnect
-                if self.server_ssl:
-                    reconnect = ReconnectRequest()
-                    self.__client_ssl_queue.put()
-                    reconnect.done.wait()
+                if self._server_ssl:
+                    self.ctx.reconnect()
+                    self._establish_ssl_with_server()
 
                 # Now, change client context to reflect changed certificate:
                 cert, key, chain_file = self.find_cert()
@@ -206,23 +178,23 @@ class SslLayer(Layer):
                 "error")
             self.log("Aborting connection attempt", "error")
             raise ProxyError2(repr(e), e)
-        except Exception as e:
+        except tcp.NetLibError as e:
             raise ProxyError2(repr(e), e)
 
     def find_cert(self):
         host = self.server_conn.address.host
-        sans = []
+        sans = set()
         # Incorporate upstream certificate
         if self.server_conn.ssl_established and (not self.config.no_upstream_cert):
             upstream_cert = self.server_conn.cert
-            sans.extend(upstream_cert.altnames)
+            sans.update(upstream_cert.altnames)
             if upstream_cert.cn:
-                sans.append(host)
+                sans.add(host)
                 host = upstream_cert.cn.decode("utf8").encode("idna")
         # Also add SNI values.
         if self._sni_from_handshake:
-            sans.append(self._sni_from_handshake)
+            sans.add(self._sni_from_handshake)
         if self._sni_from_server_change:
-            sans.append(self._sni_from_server_change)
+            sans.add(self._sni_from_server_change)
 
-        return self.config.certstore.get_cert(host, sans)
+        return self.config.certstore.get_cert(host, list(sans))
