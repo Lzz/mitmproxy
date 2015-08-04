@@ -1,15 +1,18 @@
 import socket
 import time
-from libmproxy.proxy.config import HostMatcher
-import libpathod
-from netlib import tcp, http_auth, http, socks
-from libpathod import pathoc, pathod
+from OpenSSL import SSL
+
+import netlib.tutils
+from netlib import tcp, http, socks
 from netlib.certutils import SSLCert
+from netlib.http import authentication
+from netlib.http.semantics import CONTENT_MISSING
+from libpathod import pathoc, pathod
+
+from libmproxy.proxy.config import HostMatcher
+from libmproxy.protocol import KILL, Error, http_wrappers
 import tutils
 import tservers
-from libmproxy.protocol import KILL, Error
-from libmproxy.protocol.http import CONTENT_MISSING
-from OpenSSL import SSL
 
 """
     Note that the choice of response code in these tests matters more than you
@@ -295,8 +298,8 @@ class TestHTTP(tservers.HTTPProxTest, CommonMixin, AppMixin):
 
 
 class TestHTTPAuth(tservers.HTTPProxTest):
-    authenticator = http_auth.BasicProxyAuth(
-        http_auth.PassManSingleUser(
+    authenticator = http.authentication.BasicProxyAuth(
+        http.authentication.PassManSingleUser(
             "test",
             "test"),
         "realm")
@@ -310,8 +313,8 @@ class TestHTTPAuth(tservers.HTTPProxTest):
             h'%s'='%s'
         """ % (
             self.server.port,
-            http_auth.BasicProxyAuth.AUTH_HEADER,
-            http.assemble_http_basic_auth("basic", "test", "test")
+            http.authentication.BasicProxyAuth.AUTH_HEADER,
+            authentication.assemble_http_basic_auth("basic", "test", "test")
         ))
         assert ret.status_code == 202
 
@@ -526,7 +529,7 @@ class TestHttps2Http(tservers.ReverseProxTest):
         """
             Returns a connected Pathoc instance.
         """
-        p = libpathod.pathoc.Pathoc(
+        p = pathoc.Pathoc(
             ("localhost", self.proxy.port), ssl=ssl, sni=sni, fp=None
         )
         p.connect()
@@ -765,22 +768,15 @@ class TestStreamRequest(tservers.HTTPProxTest):
             (self.server.urlbase, spec))
         connection.send("\r\n")
 
-        httpversion, code, msg, headers, content = http.read_response(
-            fconn, "GET", None, include_body=False)
+        protocol = http.http1.HTTP1Protocol(rfile=fconn)
+        resp = protocol.read_response("GET", None, include_body=False)
 
-        assert headers["Transfer-Encoding"][0] == 'chunked'
-        assert code == 200
+        assert resp.headers["Transfer-Encoding"][0] == 'chunked'
+        assert resp.status_code == 200
 
         chunks = list(
-            content for _,
-                        content,
-                        _ in http.read_http_body_chunked(
-                fconn,
-                headers,
-                None,
-                "GET",
-                200,
-                False))
+            content for _, content, _ in protocol.read_http_body_chunked(
+                resp.headers, None, "GET", 200, False))
         assert chunks == ["this", "isatest", ""]
 
         connection.close()
@@ -788,7 +784,7 @@ class TestStreamRequest(tservers.HTTPProxTest):
 
 class MasterFakeResponse(tservers.TestMaster):
     def handle_request(self, f):
-        resp = tutils.tresp()
+        resp = http_wrappers.HTTPResponse.wrap(netlib.tutils.tresp())
         f.reply(resp)
 
 
@@ -798,6 +794,17 @@ class TestFakeResponse(tservers.HTTPProxTest):
     def test_fake(self):
         f = self.pathod("200")
         assert "header_response" in f.headers.keys()
+
+
+class TestServerConnect(tservers.HTTPProxTest):
+    masterclass = MasterFakeResponse
+    no_upstream_cert = True
+    ssl = True
+    def test_unnecessary_serverconnect(self):
+        """A replayed/fake response with no_upstream_cert should not connect to an upstream server"""
+        assert self.pathod("200").status_code == 200
+        for msg in self.proxy.tmaster.log:
+            assert "serverconnect" not in msg
 
 
 class MasterKillRequest(tservers.TestMaster):
@@ -842,7 +849,7 @@ class TestTransparentResolveError(tservers.TransparentProxTest):
 
 class MasterIncomplete(tservers.TestMaster):
     def handle_request(self, f):
-        resp = tutils.tresp()
+        resp = http_wrappers.HTTPResponse.wrap(netlib.tutils.tresp())
         resp.content = CONTENT_MISSING
         f.reply(resp)
 

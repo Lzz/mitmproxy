@@ -8,6 +8,7 @@ import functools
 import cgi
 import json
 
+import netlib.utils
 
 def timestamp():
     """
@@ -58,21 +59,6 @@ def pretty_json(s):
     except ValueError:
         return None
     return json.dumps(p, sort_keys=True, indent=4).split("\n")
-
-
-def urldecode(s):
-    """
-        Takes a urlencoded string and returns a list of (key, value) tuples.
-    """
-    return cgi.parse_qsl(s, keep_blank_values=True)
-
-
-def urlencode(s):
-    """
-        Takes a list of (key, value) tuples and returns a urlencoded string.
-    """
-    s = [tuple(i) for i in s]
-    return urllib.urlencode(s, False)
 
 
 def multipartdecode(hdrs, content):
@@ -194,22 +180,6 @@ def parse_content_type(c):
                 d[clause[0].strip()] = clause[1].strip()
     return ts[0].lower(), ts[1].lower(), d
 
-
-def hostport(scheme, host, port):
-    """
-        Returns the host component, with a port specifcation if needed.
-    """
-    if (port, scheme) in [(80, "http"), (443, "https")]:
-        return host
-    else:
-        return "%s:%s" % (host, port)
-
-
-def unparse_url(scheme, host, port, path=""):
-    """
-        Returns a URL string, constructed from the specified compnents.
-    """
-    return "%s://%s%s" % (scheme, hostport(scheme, host, port), path)
 
 
 def clean_hanging_newline(t):

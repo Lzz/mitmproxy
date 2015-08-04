@@ -23,6 +23,7 @@ class ClientConnection(tcp.BaseHandler, stateobject.StateObject):
         self.timestamp_start = utils.timestamp()
         self.timestamp_end = None
         self.timestamp_ssl_setup = None
+        self.protocol = None
 
     def __repr__(self):
         return "<ClientConnection: {ssl}{host}:{port}>".format(
@@ -58,6 +59,8 @@ class ClientConnection(tcp.BaseHandler, stateobject.StateObject):
         return copy.copy(self)
 
     def send(self, message):
+        if isinstance(message, list):
+            message = b''.join(message)
         self.wfile.write(message)
         self.wfile.flush()
 
@@ -68,6 +71,15 @@ class ClientConnection(tcp.BaseHandler, stateobject.StateObject):
         return f
 
     def convert_to_ssl(self, *args, **kwargs):
+        # TODO: read ALPN from server and select same proto for client conn
+        # alpn_select = 'h2'
+        # def alpn_select_callback(conn_, options):
+        #     if alpn_select in options:
+        #         return bytes(alpn_select)
+        #     else:  # pragma no cover
+        #         return options[0]
+        # tcp.BaseHandler.convert_to_ssl(self, alpn_select=alpn_select_callback, *args, **kwargs)
+
         tcp.BaseHandler.convert_to_ssl(self, *args, **kwargs)
         self.timestamp_ssl_setup = utils.timestamp()
 
@@ -85,6 +97,7 @@ class ServerConnection(tcp.TCPClient, stateobject.StateObject):
         self.timestamp_end = None
         self.timestamp_tcp_setup = None
         self.timestamp_ssl_setup = None
+        self.protocol = None
 
     def __repr__(self):
         if self.ssl_established and self.sni:
@@ -149,6 +162,8 @@ class ServerConnection(tcp.TCPClient, stateobject.StateObject):
         self.timestamp_tcp_setup = utils.timestamp()
 
     def send(self, message):
+        if isinstance(message, list):
+            message = b''.join(message)
         self.wfile.write(message)
         self.wfile.flush()
 
@@ -160,6 +175,10 @@ class ServerConnection(tcp.TCPClient, stateobject.StateObject):
                 self.address.host.encode("idna")) + ".pem"
             if os.path.exists(path):
                 clientcert = path
+
+        # TODO: read ALPN from client and use same list for server conn
+        # self.convert_to_ssl(cert=clientcert, sni=sni, alpn_protos=[netlib.http.http2.HTTP2Protocol.ALPN_PROTO_H2], **kwargs)
+
         self.convert_to_ssl(cert=clientcert, sni=sni, **kwargs)
         self.sni = sni
         self.timestamp_ssl_setup = utils.timestamp()

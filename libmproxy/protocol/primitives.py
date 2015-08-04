@@ -167,6 +167,7 @@ class Flow(stateobject.StateObject):
         master.handle_accept_intercept(self)
 
 
+
 class ProtocolHandler(object):
     """
     A ProtocolHandler implements an application-layer protocol, e.g. HTTP.
@@ -236,7 +237,7 @@ class LiveConnection(object):
         ssl_mismatch = (
             ssl is not None and
             (
-                ssl != self.c.server_conn.ssl_established
+                (self.c.server_conn.connection and ssl != self.c.server_conn.ssl_established)
                 or
                 (sni is not None and sni != self.c.server_conn.sni)
             )

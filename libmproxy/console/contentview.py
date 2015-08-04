@@ -12,10 +12,10 @@ import urwid
 import html2text
 
 import netlib.utils
-from netlib import odict
+from netlib import odict, encoding
 
 from . import common, signals
-from .. import utils, encoding
+from .. import utils
 from ..contrib import jsbeautifier
 from ..contrib.wbxml.ASCommandResponse import ASCommandResponse
 
@@ -225,7 +225,7 @@ class ViewURLEncoded:
     content_types = ["application/x-www-form-urlencoded"]
 
     def __call__(self, hdrs, content, limit):
-        lines = utils.urldecode(content)
+        lines = netlib.utils.urldecode(content)
         if lines:
             body = common.format_keyvals(
                 [(k + ":", v) for (k, v) in lines],

@@ -8,8 +8,11 @@ import Cookie
 import cookielib
 import os
 import re
+
 from netlib import odict, wsgi, tcp
+from netlib.http.semantics import CONTENT_MISSING
 import netlib.http
+
 from . import controller, protocol, tnetstring, filt, script, version
 from .onboarding import app
 from .protocol import http, handle
@@ -158,7 +161,7 @@ class StreamLargeBodies(object):
     def run(self, flow, is_request):
         r = flow.request if is_request else flow.response
         code = flow.response.code if flow.response else None
-        expected_size = netlib.http.expected_http_body_size(
+        expected_size = netlib.http.http1.HTTP1Protocol.expected_http_body_size(
             r.headers, is_request, flow.request.method, code
         )
         if not (0 <= expected_size <= self.max_size):
@@ -240,9 +243,13 @@ class ServerPlaybackState:
         _, _, path, _, query, _ = urlparse.urlparse(r.url)
         queriesArray = urlparse.parse_qsl(query, keep_blank_values=True)
 
+        # scheme should match the client connection to be able to replay
+        # although r.scheme may have been changed to http to connect to upstream server
+        scheme = "https" if flow.client_conn and flow.client_conn.ssl_established else "http"
+
         key = [
             str(r.port),
-            str(r.scheme),
+            str(scheme),
             str(r.method),
             str(path),
         ]
@@ -837,8 +844,7 @@ class FlowMaster(controller.Master):
             host,
             port,
             path,
-            (1,
-             1),
+            (1, 1),
             headers,
             None,
             None,
@@ -917,7 +923,7 @@ class FlowMaster(controller.Master):
             return "Can't replay live request."
         if f.intercepted:
             return "Can't replay while intercepting..."
-        if f.request.content == http.CONTENT_MISSING:
+        if f.request.content == CONTENT_MISSING:
             return "Can't replay request with missing content..."
         if f.request:
             f.backup()

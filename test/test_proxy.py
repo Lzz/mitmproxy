@@ -30,8 +30,13 @@ class TestServerConnection:
         f = tutils.tflow()
         f.server_conn = sc
         f.request.path = "/p/200:da"
-        sc.send(f.request.assemble())
-        assert http.read_response(sc.rfile, f.request.method, 1000)
+
+        # use this protocol just to assemble - not for actual sending
+        protocol = http.http1.HTTP1Protocol(rfile=sc.rfile)
+        sc.send(protocol.assemble(f.request))
+
+        protocol = http.http1.HTTP1Protocol(rfile=sc.rfile)
+        assert protocol.read_response(f.request.method, 1000)
         assert self.d.last_log()
 
         sc.finish()
